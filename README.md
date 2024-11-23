@@ -42,7 +42,7 @@ chmod +x iconify.sh
 
 Run the script with default settings:
 
-udo ./iconify.sh
+sudo ./iconify.sh
 
 ### **Command-Line Options**
 
@@ -75,8 +75,6 @@ sudo ./iconify.sh
 ### **Generate Icons with Specific Sizes**
 
 sudo ./iconify.sh -z 16,32,48,128
-    
-### **List Icon Cache Backups**
 
 ### **List Icon Cache Backups**
 
