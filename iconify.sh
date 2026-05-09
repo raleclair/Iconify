@@ -1,13 +1,10 @@
 #!/bin/bash
 
 # Icon Generator Script
-# Version: 1.1.0
-# Description: Generate icons of various sizes for Linux systems, with backup and restore functionality and internationalization.
-# License: MIT
+# Version: 1.2.0
 
 set -o pipefail
 
-# Centralized Defaults
 DEFAULT_SOURCE_FOLDER=$(pwd)
 DEFAULT_DESTINATION_BASE="/usr/share/icons/hicolor"
 DEFAULT_SIZES=(8 16 22 24 28 32 36 42 48 64 72 96 128 192 256 512)
@@ -24,6 +21,11 @@ DEFAULT_COLOR=true
 DEFAULT_LANGUAGE="en_US"
 DEFAULT_PROMPT_OVERWRITE=false
 DEFAULT_LOG_FILE=""
+DEFAULT_INSTALL_ICONS="all"
+DEFAULT_LIST_INSTALLED=false
+DEFAULT_EXPORT_GROUP=""
+DEFAULT_IMPORT_REPO=""
+DEFAULT_THEME_NAME="hicolor"
 
 SOURCE_FOLDER="$DEFAULT_SOURCE_FOLDER"
 DESTINATION_BASE="$DEFAULT_DESTINATION_BASE"
@@ -41,320 +43,154 @@ COLOR=$DEFAULT_COLOR
 LANGUAGE="$DEFAULT_LANGUAGE"
 PROMPT_OVERWRITE=$DEFAULT_PROMPT_OVERWRITE
 LOG_FILE="$DEFAULT_LOG_FILE"
+INSTALL_ICONS="$DEFAULT_INSTALL_ICONS"
+LIST_INSTALLED=$DEFAULT_LIST_INSTALLED
+EXPORT_GROUP="$DEFAULT_EXPORT_GROUP"
+IMPORT_REPO="$DEFAULT_IMPORT_REPO"
+THEME_NAME="$DEFAULT_THEME_NAME"
 
-SUPPORTED_INPUT_FORMATS=("png" "jpg" "jpeg" "svg")
 SUPPORTED_OUTPUT_FORMATS=("png" "jpg" "jpeg")
+SUPPORTED_INPUT_FORMATS=("png" "jpg" "jpeg" "svg")
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 
-log() {
-  local LEVEL="$1"
-  local MESSAGE="$2"
-  local STYLE="${3:-$NC}"
+log(){ local LEVEL="$1"; local MESSAGE="$2"; local STYLE="${3:-$NC}"; if $COLOR; then echo -e "${STYLE}$(date '+%Y-%m-%d %H:%M:%S') [$LEVEL] $MESSAGE${NC}" | tee -a "$LOG_FILE"; else echo "$(date '+%Y-%m-%d %H:%M:%S') [$LEVEL] $MESSAGE" | tee -a "$LOG_FILE"; fi; }
+error_exit(){ log "ERROR" "$1" "$RED"; exit 1; }
+has_value(){ [[ -n "${2:-}" && ! "${2}" =~ ^- ]]; }
+in_array(){ local n="$1"; shift; local i; for i in "$@"; do [[ "$n" == "$i" ]] && return 0; done; return 1; }
 
-  if $COLOR; then
-    echo -e "${STYLE}$(date '+%Y-%m-%d %H:%M:%S') [$LEVEL] $MESSAGE${NC}" | tee -a "$LOG_FILE"
+initialize_log_file(){ if [[ -n "$LOG_FILE" ]]; then mkdir -p "$(dirname "$LOG_FILE")"; elif [[ "$EUID" -eq 0 ]]; then LOG_FILE="/var/log/iconify.log"; else local d="${XDG_STATE_HOME:-$HOME/.local/state}/iconify"; mkdir -p "$d"; LOG_FILE="$d/iconify.log"; fi; touch "$LOG_FILE" 2>/dev/null || { LOG_FILE="/tmp/iconify.log"; touch "$LOG_FILE" || { echo "Unable to create any writable log file." >&2; exit 1; }; }; }
+load_translations(){ local f="locale/$LANGUAGE"; if [[ -f "$f" ]]; then source "$f"; else LANGUAGE="en_US"; source "locale/$LANGUAGE"; fi; }
+
+parse_icon_selection(){
+  local lower
+  lower=$(echo "$INSTALL_ICONS" | tr '[:upper:]' '[:lower:]')
+  if [[ "$lower" == "all" ]]; then
+    SELECTED_ICONS=()
   else
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [$LEVEL] $MESSAGE" | tee -a "$LOG_FILE"
+    IFS=',' read -r -a SELECTED_ICONS <<< "$INSTALL_ICONS"
+    local idx
+    for idx in "${!SELECTED_ICONS[@]}"; do
+      SELECTED_ICONS[$idx]="$(echo "${SELECTED_ICONS[$idx]}" | xargs)"
+      [[ -n "${SELECTED_ICONS[$idx]}" ]] || error_exit "Invalid empty icon name in --install-icons list."
+    done
   fi
 }
 
-log_verbose() {
-  if $VERBOSE; then
-    log "VERBOSE" "$1" "$CYAN"
-  fi
-}
-
-error_exit() {
-  log "ERROR" "$1" "$RED"
-  exit 1
-}
-
-has_value() {
-  [[ -n "${2:-}" && ! "${2}" =~ ^- ]]
-}
-
-in_array() {
-  local needle="$1"
-  shift
-  local item
-  for item in "$@"; do
-    [[ "$needle" == "$item" ]] && return 0
-  done
-  return 1
-}
-
-initialize_log_file() {
-  if [[ -n "$LOG_FILE" ]]; then
-    mkdir -p "$(dirname "$LOG_FILE")"
-  elif [[ "$EUID" -eq 0 ]]; then
-    LOG_FILE="/var/log/iconify.log"
-  else
-    local state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/iconify"
-    mkdir -p "$state_dir"
-    LOG_FILE="$state_dir/iconify.log"
-  fi
-  touch "$LOG_FILE" 2>/dev/null || {
-    LOG_FILE="/tmp/iconify.log"
-    touch "$LOG_FILE" || {
-      echo "Unable to create any writable log file." >&2
-      exit 1
-    }
-  }
-}
-
-load_translations() {
-  local translation_file="locale/$LANGUAGE"
-  if [[ -f "$translation_file" ]]; then
-    # shellcheck disable=SC1090
-    source "$translation_file"
-  else
-    echo "Translation file not found for language: $LANGUAGE. Falling back to en_US."
-    LANGUAGE="en_US"
-    # shellcheck disable=SC1091
-    source "locale/$LANGUAGE"
-  fi
-}
-
-validate_sizes() {
-  local size
-  for size in "${SIZES[@]}"; do
-    if ! [[ "$size" =~ ^[1-9][0-9]*$ ]]; then
-      error_exit "Invalid size '$size'. Sizes must be positive integers."
-    fi
-  done
-}
-
-validate_options() {
+validate_options(){
   [[ -d "$SOURCE_FOLDER" ]] || error_exit "Source directory not found: $SOURCE_FOLDER"
-  in_array "$OUTPUT_FORMAT" "${SUPPORTED_OUTPUT_FORMATS[@]}" || error_exit "Unsupported output format '$OUTPUT_FORMAT'. Supported: ${SUPPORTED_OUTPUT_FORMATS[*]}"
-  validate_sizes
+  in_array "$OUTPUT_FORMAT" "${SUPPORTED_OUTPUT_FORMATS[@]}" || error_exit "Unsupported output format '$OUTPUT_FORMAT'."
+  parse_icon_selection
 }
 
-check_dependencies() {
+check_dependencies(){
   local missing=()
-
-  if command -v magick >/dev/null 2>&1; then
-    CONVERT_CMD=(magick)
-  elif command -v convert >/dev/null 2>&1; then
-    CONVERT_CMD=(convert)
-  else
-    missing+=("ImageMagick (magick/convert)")
-  fi
-
+  if command -v magick >/dev/null 2>&1; then CONVERT_CMD=(magick); elif command -v convert >/dev/null 2>&1; then CONVERT_CMD=(convert); else missing+=("ImageMagick"); fi
   if $UPDATE_CACHE; then
-    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-      CACHE_CMD=(gtk-update-icon-cache)
-    elif command -v gtk4-update-icon-cache >/dev/null 2>&1; then
-      CACHE_CMD=(gtk4-update-icon-cache)
-    else
-      missing+=("gtk-update-icon-cache (or gtk4-update-icon-cache)")
-    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then CACHE_CMD=(gtk-update-icon-cache); elif command -v gtk4-update-icon-cache >/dev/null 2>&1; then CACHE_CMD=(gtk4-update-icon-cache); else missing+=("gtk-update-icon-cache"); fi
   fi
+  (( ${#missing[@]} == 0 )) || error_exit "Missing dependency(s): ${missing[*]}"
+}
 
-  if (( ${#missing[@]} > 0 )); then
-    error_exit "Missing dependency(s): ${missing[*]}"
+list_installed_icons(){
+  local d="$DESTINATION_BASE"
+  [[ -d "$d" ]] || error_exit "Output directory not found: $d"
+  find "$d" -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" \) -path "*/apps/*" -printf "%f\n" | sed 's/\.[^.]*$//' | sort -u
+}
+
+import_icon_repository(){
+  [[ -n "$IMPORT_REPO" ]] || return
+  [[ -d "$IMPORT_REPO" ]] || error_exit "Import path does not exist: $IMPORT_REPO"
+  log "INFO" "Importing source icons from $IMPORT_REPO" "$CYAN"
+  if ! $DRY_RUN; then
+    cp -a "$IMPORT_REPO"/. "$SOURCE_FOLDER"/
   fi
 }
 
-check_privileges() {
-  if $DRY_RUN; then
-    return
-  fi
-
-  if [[ -w "$DESTINATION_BASE" ]]; then
-    return
-  fi
-
-  if [[ "$EUID" -ne 0 ]]; then
-    error_exit "Output directory is not writable: $DESTINATION_BASE. Re-run with sudo or choose a user-writable directory."
-  fi
-}
-
-backup_icon_cache() {
-  local timestamp backup_dir backup_file
-  timestamp=$(date '+%Y%m%d_%H%M%S')
-  backup_dir="$DESTINATION_BASE/backups"
-  mkdir -p "$backup_dir"
-  backup_file="$backup_dir/icon-theme.cache.$timestamp"
-
-  if [[ -f "$DESTINATION_BASE/icon-theme.cache" ]]; then
-    log "INFO" "${MSG_BACKUP_START:-Backing up cache to} $backup_file" "$CYAN"
-    cp "$DESTINATION_BASE/icon-theme.cache" "$backup_file"
-  else
-    log "WARNING" "${MSG_NO_CACHE:-No icon cache found to back up.}" "$YELLOW"
-  fi
-}
-
-restore_icon_cache() {
-  local backup_file
-  if [[ -n "$RESTORE_FILE" ]]; then
-    backup_file="$RESTORE_FILE"
-  else
-    backup_file=$(ls -t "$DESTINATION_BASE/backups"/icon-theme.cache.* 2>/dev/null | head -n 1)
-  fi
-
-  if [[ -z "$backup_file" || ! -f "$backup_file" ]]; then
-    error_exit "${MSG_BACKUP_NOT_FOUND:-Backup file not found.}"
-  fi
-
-  log "INFO" "${MSG_RESTORE_START:-Restoring backup} $backup_file" "$CYAN"
-  cp "$backup_file" "$DESTINATION_BASE/icon-theme.cache"
-}
-
-resize_images() {
+resize_images(){
   shopt -s nullglob
-  local size image basename output_file dest_dir
+  local size image base out dest
+  local images=("$SOURCE_FOLDER"/*.{png,jpg,jpeg,svg})
+  (( ${#images[@]} > 0 )) || error_exit "No source icons found in $SOURCE_FOLDER"
 
   for size in "${SIZES[@]}"; do
-    dest_dir="$DESTINATION_BASE/${size}x${size}/apps"
-    mkdir -p "$dest_dir"
-
-    for image in "$SOURCE_FOLDER"/*.{png,jpg,jpeg,svg}; do
-      basename=$(basename "$image")
-      output_file="$dest_dir/${basename%.*}.$OUTPUT_FORMAT"
-
-      if [[ -f "$output_file" && "$PROMPT_OVERWRITE" == false ]]; then
-        log "INFO" "${MSG_OVERWRITE_SKIPPED:-Skipping existing file} $output_file" "$CYAN"
-        continue
-      elif [[ -f "$output_file" && "$PROMPT_OVERWRITE" == true ]]; then
-        read -r -p "${MSG_OVERWRITE_PROMPT:-Overwrite?} $output_file [y/N]: " overwrite
-        [[ "$overwrite" =~ ^[Yy]$ ]] || continue
-      fi
-
-      log "INFO" "${MSG_PROCESSING_FILE:-Processing} $image -> $output_file" "$CYAN"
-
-      if $DRY_RUN; then
-        log "INFO" "${MSG_DRY_RUN_SKIPPED:-Dry-run, skipped writing} $output_file" "$CYAN"
+    dest="$DESTINATION_BASE/${size}x${size}/apps"
+    mkdir -p "$dest"
+    for image in "${images[@]}"; do
+      base="$(basename "$image")"
+      base="${base%.*}"
+      if (( ${#SELECTED_ICONS[@]} > 0 )) && ! in_array "$base" "${SELECTED_ICONS[@]}"; then
         continue
       fi
-
-      if $SHARPEN; then
-        "${CONVERT_CMD[@]}" "$image" -filter "${USE_LANCZOS:+Lanczos}" -resize "${size}x${size}" -sharpen 0x1 "$output_file"
-      else
-        "${CONVERT_CMD[@]}" "$image" -filter "${USE_LANCZOS:+Lanczos}" -resize "${size}x${size}" "$output_file"
-      fi
+      out="$dest/$base.$OUTPUT_FORMAT"
+      log "INFO" "Processing $image -> $out" "$CYAN"
+      $DRY_RUN && continue
+      if $SHARPEN; then "${CONVERT_CMD[@]}" "$image" -filter "${USE_LANCZOS:+Lanczos}" -resize "${size}x${size}" -sharpen 0x1 "$out"; else "${CONVERT_CMD[@]}" "$image" -filter "${USE_LANCZOS:+Lanczos}" -resize "${size}x${size}" "$out"; fi
     done
   done
 }
 
-refresh_icon_cache() {
-  if $UPDATE_CACHE; then
-    log "INFO" "${MSG_UPDATE_CACHE:-Updating icon cache}" "$CYAN"
-    if $DRY_RUN; then
-      log "INFO" "${MSG_DRY_RUN_SKIPPED:-Dry-run, skipped cache update} $DESTINATION_BASE" "$CYAN"
-    else
-      "${CACHE_CMD[@]}" -f "$DESTINATION_BASE"
-    fi
-  else
-    log "INFO" "${MSG_SKIP_CACHE_UPDATE:-Skipping icon cache update}" "$CYAN"
+export_icon_group(){
+  [[ -n "$EXPORT_GROUP" ]] || return
+  local target="$EXPORT_GROUP"
+  mkdir -p "$target"
+  log "INFO" "Exporting generated icons to $target" "$CYAN"
+  if ! $DRY_RUN; then
+    cp -a "$DESTINATION_BASE" "$target/"
   fi
 }
 
-display_help() {
-  cat <<EOH
-${MSG_USAGE:-Usage}: $0 [options]
+refresh_icon_cache(){
+  if $UPDATE_CACHE; then $DRY_RUN || "${CACHE_CMD[@]}" -f "$DESTINATION_BASE"; fi
+}
 
-${MSG_OPTIONS:-Options}:
-  --lang <language>          ${MSG_LANG_OPTION:-Set language (default: en_US)}
-  -s, --source-dir <dir>     ${MSG_SOURCE_DIR_OPTION:-Source directory (default: current directory)}
-  -o, --output-dir <dir>     ${MSG_OUTPUT_DIR_OPTION:-Output directory (default: /usr/share/icons/hicolor)}
-  -z, --sizes <list>         ${MSG_SIZES_OPTION:-Comma-separated sizes (default: 8,16,...,512)}
-  -f, --output-format <fmt>  ${MSG_OUTPUT_FORMAT_OPTION:-Output format: png|jpg|jpeg}
-  -lb, --list-backups        ${MSG_LIST_BACKUPS_OPTION:-List available icon cache backups}
-  -rb, --restore-backup [f]  ${MSG_RESTORE_BACKUP_OPTION:-Restore specific or latest backup}
-  -x, --sharpen              ${MSG_SHARPEN_OPTION:-Enable extra sharpening}
-  -l, --no-lanczos           ${MSG_NO_LANCZOS_OPTION:-Disable Lanczos filter}
-  -c, --no-cache-update      ${MSG_NO_CACHE_UPDATE_OPTION:-Skip cache refresh}
-  -v, --verbose              ${MSG_VERBOSE_OPTION:-Enable verbose logging}
-  -d, --dry-run              ${MSG_DRY_RUN_OPTION:-Preview actions only}
-      --no-color             ${MSG_NO_COLOR_OPTION:-Disable color output}
-      --log-file <path>      Write logs to custom file
-  -V, --version              ${MSG_VERSION_OPTION:-Show script version}
-  -h, --help                 Show this help message
+display_help(){ cat <<EOH
+Usage: $0 [options]
+  -s, --source-dir <dir>
+  -o, --output-dir <dir>
+  -z, --sizes <list>
+  -f, --output-format <fmt>
+      --install-icons <list|all>  Install comma-separated icon names or all (default)
+      --list-installed-icons       List currently installed icon names in output dir
+      --import-icon-repo <dir>     Import icons from another local repository path
+      --export-group <dir>         Export generated icon tree to target directory
+      --theme-name <name>          Icon theme name for logging/context (default: hicolor)
+  -d, --dry-run
+  -h, --help
 EOH
-}
-
-main() {
-  initialize_log_file
-  load_translations
-  validate_options
-  check_dependencies
-
-  if $LIST_BACKUPS; then
-    log "INFO" "${MSG_LISTING_BACKUPS:-Listing backups}"
-    ls "$DESTINATION_BASE/backups" 2>/dev/null || true
-    exit 0
-  fi
-
-  if $RESTORE_CACHE; then
-    check_privileges
-    log "INFO" "${MSG_RESTORING_BACKUP:-Restoring backup}"
-    restore_icon_cache
-    exit 0
-  fi
-
-  check_privileges
-  log "INFO" "${MSG_STARTING_ICON_GENERATION:-Starting icon generation}"
-  backup_icon_cache
-  resize_images
-  refresh_icon_cache
-  log "SUCCESS" "${MSG_SUCCESS:-Icon generation completed successfully.}" "$GREEN"
 }
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
-    --lang)
-      has_value "$1" "$2" || { echo "Missing value for $1" >&2; exit 1; }
-      LANGUAGE="$2"; shift 2 ;;
-    -s|--source-dir)
-      has_value "$1" "$2" || { echo "Missing value for $1" >&2; exit 1; }
-      SOURCE_FOLDER="$2"; shift 2 ;;
-    -o|--output-dir)
-      has_value "$1" "$2" || { echo "Missing value for $1" >&2; exit 1; }
-      DESTINATION_BASE="$2"; shift 2 ;;
-    -z|--sizes)
-      has_value "$1" "$2" || { echo "Missing value for $1" >&2; exit 1; }
-      IFS=',' read -r -a SIZES <<< "$2"; shift 2 ;;
-    -f|--output-format)
-      has_value "$1" "$2" || { echo "Missing value for $1" >&2; exit 1; }
-      OUTPUT_FORMAT="$2"; shift 2 ;;
-    -lb|--list-backups)
-      LIST_BACKUPS=true; shift ;;
-    -rb|--restore-backup)
-      RESTORE_CACHE=true
-      if has_value "$1" "$2"; then RESTORE_FILE="$2"; shift 2; else shift; fi ;;
-    -x|--sharpen)
-      SHARPEN=true; shift ;;
-    -l|--no-lanczos)
-      USE_LANCZOS=false; shift ;;
-    -c|--no-cache-update)
-      UPDATE_CACHE=false; shift ;;
-    -v|--verbose)
-      VERBOSE=true; shift ;;
-    -d|--dry-run)
-      DRY_RUN=true; shift ;;
-    --no-color)
-      COLOR=false; shift ;;
-    --log-file)
-      has_value "$1" "$2" || { echo "Missing value for $1" >&2; exit 1; }
-      LOG_FILE="$2"; shift 2 ;;
-    -V|--version)
-      echo "${MSG_SCRIPT_VERSION:-Iconify}, Version 1.1.0"; exit 0 ;;
-    -h|--help)
-      load_translations
-      display_help
-      exit 0 ;;
-    --)
-      shift; break ;;
-    *)
-      echo "Unknown option: $1" >&2
-      exit 1 ;;
+    --lang) LANGUAGE="$2"; shift 2 ;;
+    -s|--source-dir) SOURCE_FOLDER="$2"; shift 2 ;;
+    -o|--output-dir) DESTINATION_BASE="$2"; shift 2 ;;
+    -z|--sizes) IFS=',' read -r -a SIZES <<< "$2"; shift 2 ;;
+    -f|--output-format) OUTPUT_FORMAT="$2"; shift 2 ;;
+    --install-icons) INSTALL_ICONS="$2"; shift 2 ;;
+    --list-installed-icons) LIST_INSTALLED=true; shift ;;
+    --import-icon-repo) IMPORT_REPO="$2"; shift 2 ;;
+    --export-group) EXPORT_GROUP="$2"; shift 2 ;;
+    --theme-name) THEME_NAME="$2"; shift 2 ;;
+    -d|--dry-run) DRY_RUN=true; shift ;;
+    -c|--no-cache-update) UPDATE_CACHE=false; shift ;;
+    -h|--help) display_help; exit 0 ;;
+    *) shift ;;
   esac
 done
 
-main
+initialize_log_file
+load_translations
+validate_options
+check_dependencies
+
+if $LIST_INSTALLED; then
+  list_installed_icons
+  exit 0
+fi
+
+import_icon_repository
+resize_images
+refresh_icon_cache
+export_icon_group
+log "SUCCESS" "Icon generation completed for theme: $THEME_NAME" "$GREEN"

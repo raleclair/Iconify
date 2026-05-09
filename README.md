@@ -53,6 +53,11 @@ sudo ./iconify.sh
 | `-o, --output-dir`         | Output base directory for icons (default: `/usr/share/icons/hicolor`).                          |
 | `-z, --sizes`              | Comma-separated list of sizes to generate (default: `8,16,22,24,28,32,36,42,48,64,72,96,128,192,256,512`). |
 | `-f, --output-format`      | Output format (e.g., `png`, `jpg`) (default: `png`).                                            |
+| `--install-icons`          | Install a comma-separated list of icon names, or `all` (default).                               |
+| `--list-installed-icons`   | List currently installed icon names from the output directory.                                   |
+| `--import-icon-repo`       | Import icon source files from another local repository path before processing.                   |
+| `--export-group`           | Export/copy generated icon output tree into another directory.                                   |
+| `--theme-name`             | Optional theme label for organized installs/logging context.                                     |
 | `-lb, --list-backups`      | List all available icon cache backups.                                                         |
 | `-rb, --restore-backup`    | Restore a specific or the most recent icon cache backup.                                        |
 | `-x, --sharpen`            | Enable extra sharpening for resized images.                                                    |
