@@ -13,6 +13,10 @@
 - Add richer run summaries (counts for generated, skipped, failed files).
 
 ## Phase 3: Versatility
+
+- Add icon selection controls (specific names or `all`) and installed-icon verification output.
+- Add import/export workflows for icon repositories and generated icon groups.
+- Add destination/profile controls for choosing installation targets without requiring script edits.
 - Add recursive source scanning and optional directory structure preservation.
 - Support selectable icon categories and theme names.
 - Add an optional interactive wizard mode while preserving non-interactive CLI behavior.
